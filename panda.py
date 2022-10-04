@@ -1,30 +1,61 @@
+from re import S
 import numpy as np
 import torch
+import os
 from sklearn.metrics import roc_auc_score
 import torch.optim as optim
 import argparse
-from losses import CompactnessLoss, EWCLoss
-import utils
+from losses import CompactnessLoss, EWCLoss, ClassAccuracy
+import utils.panda_utils as utils
 from copy import deepcopy
 from tqdm import tqdm
 
-def train_model(model, train_loader, test_loader, device, args, ewc_loss):
+from utils.settings_functions import *
+from data import create_datamodule
+
+def train_model(model, train_loader, val_loader, device, args, ewc_loss, save_path, project):
     model.eval()
-    auc, feature_space = get_score(model, device, train_loader, test_loader)
+    auc, feature_space = get_score(model, device, train_loader, val_loader)
     print('Epoch: {}, AUROC is: {}'.format(0, auc))
     optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=0.00005, momentum=0.9)
     center = torch.FloatTensor(feature_space).mean(dim=0)
     criterion = CompactnessLoss(center.to(device))
+
+    # try:
     for epoch in range(args.epochs):
         running_loss = run_epoch(model, train_loader, optimizer, criterion, device, args.ewc, ewc_loss)
         print('Epoch: {}, Loss: {}'.format(epoch + 1, running_loss))
-        auc, feature_space = get_score(model, device, train_loader, test_loader)
+        auc, feature_space = get_score(model, device, train_loader, val_loader)
         print('Epoch: {}, AUROC is: {}'.format(epoch + 1, auc))
 
+        ckpt = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': running_loss,
+                'auc': auc}
+
+        if (epoch+1) == args.epochs:
+            torch.save(ckpt, os.path.join(save_path, 'last.ckpt'))
+        elif (epoch+1) % 1 == 0:
+            torch.save(ckpt, os.path.join(save_path, project + '_epoch_{}.ckpt'.format(epoch+1)))
+
+    # except KeyboardInterrupt:
+    #     ckpt = {
+    #             'epoch': epoch,
+    #             'model_state_dict': model.state_dict(),
+    #             'optimizer_state_dict': optimizer.state_dict(),
+    #             'loss': running_loss,
+    #             'auc': auc}
+    #     torch.save(ckpt, os.path.join(save_path, 'last.ckpt'))
+
+
+# python panda.py --settings_path settings\panda.hjson --dataset custom --ewc
 
 def run_epoch(model, train_loader, optimizer, criterion, device, ewc, ewc_loss):
     running_loss = 0.0
-    for i, (imgs, _) in enumerate(train_loader):
+    for i, batch in enumerate(tqdm(train_loader, desc='Training')):
+        imgs, labels, label_names, filenames = batch
 
         images = imgs.to(device)
 
@@ -48,30 +79,55 @@ def run_epoch(model, train_loader, optimizer, criterion, device, ewc, ewc_loss):
     return running_loss / (i + 1)
 
 
-def get_score(model, device, train_loader, test_loader):
+def get_score(model, device, train_loader, val_loader):
     train_feature_space = []
     with torch.no_grad():
-        for (imgs, _) in tqdm(train_loader, desc='Train set feature extracting'):
+        for batch in tqdm(train_loader, desc='Train set feature extracting'):
+            # imgs, _ = batch
+            # imgs = imgs.to(device)
+
+            imgs, y, _, _ = batch
             imgs = imgs.to(device)
             _, features = model(imgs)
             train_feature_space.append(features)
         train_feature_space = torch.cat(train_feature_space, dim=0).contiguous().cpu().numpy()
-    test_feature_space = []
+    val_feature_space = []
     with torch.no_grad():
-        for (imgs, _) in tqdm(test_loader, desc='Test set feature extracting'):
+        labels = []
+        val_accuracy = []
+        for batch in tqdm(val_loader, desc='Val set feature extracting'):
+            # imgs, _ = batch
+            # imgs = imgs.to(device)
+
+            imgs, y, _, _ = batch
+            labels.extend(y.type(torch.int).tolist())
+
             imgs = imgs.to(device)
-            _, features = model(imgs)
-            test_feature_space.append(features)
-        test_feature_space = torch.cat(test_feature_space, dim=0).contiguous().cpu().numpy()
-        test_labels = test_loader.dataset.targets
+            yhat, features = model(imgs)
+            yhat = yhat.unsqueeze(1)
+            accuracy = ClassAccuracy(yhat, y)
+            val_accuracy.append(accuracy)
 
-    distances = utils.knn_score(train_feature_space, test_feature_space)
 
-    auc = roc_auc_score(test_labels, distances)
+            val_feature_space.append(features)
+        val_feature_space = torch.cat(val_feature_space, dim=0).contiguous().cpu().numpy()
+
+    val_accuracy = np.average(np.array(val_accuracy))
+    distances = utils.knn_score(train_feature_space, val_feature_space)
+
+    auc = roc_auc_score(labels, distances)
 
     return auc, train_feature_space
 
 def main(args):
+
+    settings = load_settings(args.settings_path)
+    # settings = update_settings(args, settings)
+
+    save_path = os.path.join(args.save_folder, 'ckpt')
+    if not os.path.exists(args.save_folder):
+        os.makedirs(save_path)
+
     print('Dataset: {}, Normal Label: {}, LR: {}'.format(args.dataset, args.label, args.lr))
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(device)
@@ -89,13 +145,21 @@ def main(args):
         ewc_loss = EWCLoss(frozen_model, fisher)
 
     utils.freeze_parameters(model)
-    train_loader, test_loader = utils.get_loaders(dataset=args.dataset, label_class=args.label, batch_size=args.batch_size)
-    train_model(model, train_loader, test_loader, device, args, ewc_loss)
+
+    if args.dataset == 'custom':
+        dm = create_datamodule(settings, run=None)
+        train_loader = dm.train_dataloader()
+        val_loader = dm.val_dataloader()
+        train_model(model, train_loader, val_loader, device, args, ewc_loss, save_path, args.project)
+    else:
+        train_loader, val_loader = utils.get_loaders(dataset=args.dataset, label_class=args.label, batch_size=args.batch_size)
+        train_model(model, train_loader, val_loader, device, args, ewc_loss, save_path, args.project)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--dataset', default='cifar10')
+    parser.add_argument('--settings_path', default='settings/panda.hjson', type=str, help='Path to settings file')
+    parser.add_argument('--dataset', choices=['cifar10', 'fashion', 'custom'], default='custom')
     parser.add_argument('--diag_path', default='./data/fisher_diagonal.pth', help='fim diagonal path')
     parser.add_argument('--ewc', action='store_true', help='Train with EWC')
     parser.add_argument('--epochs', default=15, type=int, metavar='epochs', help='number of epochs')
@@ -103,6 +167,8 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=1e-2, help='The initial learning rate.')
     parser.add_argument('--resnet_type', default=152, type=int, help='which resnet to use')
     parser.add_argument('--batch_size', default=32, type=int)
+    parser.add_argument('--save_folder', default='training', type=str, help='Output folder to save model checkpoints')
+    parser.add_argument('--project', default='training', type=str, help='Project name')
 
     args = parser.parse_args()
 

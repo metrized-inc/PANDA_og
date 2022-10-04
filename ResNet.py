@@ -217,9 +217,11 @@ class ResNet(nn.Module):
 
         x = self.avgpool(x)
         avg = torch.flatten(x, 1)
-        x = self.fc(avg)
+        # x = self.fc(avg)
+        x = self.classifier(avg)
+        p = nn.Sigmoid()(x[:, 0])
 
-        return x.squeeze(), avg.squeeze()
+        return p, avg.squeeze()
 
     def forward(self, x):
         return self._forward_impl(x)

@@ -3,7 +3,7 @@ import torch
 from sklearn.metrics import roc_auc_score
 import torch.optim as optim
 import argparse
-import utils
+import utils.panda_utils
 
 def train_model(model, train_loader, outliers_loader, test_loader, device, epochs, lr):
     model.eval()
