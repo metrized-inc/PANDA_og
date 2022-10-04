@@ -8,6 +8,21 @@ import utils
 from copy import deepcopy
 from tqdm import tqdm
 
+from data import create_datamodule
+from utils_custom.settings_functions import load_settings
+from mvtec_ad import MVTecAD
+import torchvision.transforms as transforms
+from torch.utils.data import Dataset, DataLoader
+
+
+def _convert_label(x):
+    '''
+    convert anomaly label. 0: normal; 1: anomaly.
+    :param x (int): class label
+    :return: 0 or 1
+    '''
+    return 0 if x == 0 else 1
+
 def train_model(model, train_loader, test_loader, device, args, ewc_loss):
     model.eval()
     auc, feature_space = get_score(model, device, train_loader, test_loader)
@@ -24,7 +39,11 @@ def train_model(model, train_loader, test_loader, device, args, ewc_loss):
 
 def run_epoch(model, train_loader, optimizer, criterion, device, ewc, ewc_loss):
     running_loss = 0.0
-    for i, (imgs, _) in enumerate(train_loader):
+    for i, batch in enumerate(train_loader):
+
+        # imgs, _ = batch
+        imgs, _, _, _ = batch
+        # imgs, mask, target = batch
 
         images = imgs.to(device)
 
@@ -51,19 +70,31 @@ def run_epoch(model, train_loader, optimizer, criterion, device, ewc, ewc_loss):
 def get_score(model, device, train_loader, test_loader):
     train_feature_space = []
     with torch.no_grad():
-        for (imgs, _) in tqdm(train_loader, desc='Train set feature extracting'):
+        for batch in tqdm(train_loader, desc='Train set feature extracting'):
+            # imgs, _ = batch
+            imgs, _, _, _ = batch
+            # imgs, mask, target = batch
+
             imgs = imgs.to(device)
             _, features = model(imgs)
             train_feature_space.append(features)
         train_feature_space = torch.cat(train_feature_space, dim=0).contiguous().cpu().numpy()
     test_feature_space = []
     with torch.no_grad():
-        for (imgs, _) in tqdm(test_loader, desc='Test set feature extracting'):
+        test_labels = []
+        for batch in tqdm(test_loader, desc='Test set feature extracting'):
+            # imgs, _ = batch
+            imgs, y, _, _ = batch
+            # imgs, mask, target = batch
+
             imgs = imgs.to(device)
             _, features = model(imgs)
             test_feature_space.append(features)
+            test_labels.extend(y.type(torch.int).tolist())
         test_feature_space = torch.cat(test_feature_space, dim=0).contiguous().cpu().numpy()
-        test_labels = test_loader.dataset.targets
+        # test_labels = test_loader.dataset.targets
+
+        test_labels = [0 if x > 0 else 1 for x in test_labels]
 
     distances = utils.knn_score(train_feature_space, test_feature_space)
 
@@ -89,7 +120,63 @@ def main(args):
         ewc_loss = EWCLoss(frozen_model, fisher)
 
     utils.freeze_parameters(model)
-    train_loader, test_loader = utils.get_loaders(dataset=args.dataset, label_class=args.label, batch_size=args.batch_size)
+    # train_loader, test_loader = utils.get_loaders(dataset=args.dataset, label_class=args.label, batch_size=args.batch_size)
+
+    settings_path = "panda.hjson"
+    settings = load_settings(settings_path)
+    dm = create_datamodule(settings)
+    train_loader = dm.train_dataloader()
+    test_loader = dm.val_dataloader()
+
+    # define transforms
+    # transform = transforms.Compose([transforms.Resize(256),
+    #                                   transforms.CenterCrop(224),
+    #                                   transforms.ToTensor(),
+    #                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+
+
+    # transform_gray = transforms.Compose([
+    #                              transforms.Resize(256),
+    #                              transforms.CenterCrop(224),
+    #                              transforms.Grayscale(num_output_channels=3),
+    #                              transforms.ToTensor(),
+    #                              transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    #                             ])
+
+    # transform = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor()])
+    # target_transform = transforms.Lambda(_convert_label)
+
+    # mvtec_train = MVTecAD('data',
+    #                 subset_name='bottle',
+    #                 train=True,
+    #                 transform=transform,
+    #                 mask_transform=transform,
+    #                 target_transform=target_transform,
+    #                 download=True)
+
+    # mvtec_test = MVTecAD('data',
+    #                 subset_name='bottle',
+    #                 train=False,
+    #                 transform=transform,
+    #                 mask_transform=transform,
+    #                 target_transform=target_transform,
+    #                 download=True)
+
+    # # feed to data loader
+    # train_loader = DataLoader(mvtec_train,
+    #                          batch_size=32,
+    #                          shuffle=True,
+    #                          num_workers=0,
+    #                          pin_memory=True,
+    #                          drop_last=True)
+
+    # test_loader = DataLoader(mvtec_test,
+    #                          batch_size=32,
+    #                          shuffle=True,
+    #                          num_workers=0,
+    #                          pin_memory=True,
+    #                          drop_last=True)
+
     train_model(model, train_loader, test_loader, device, args, ewc_loss)
 
 

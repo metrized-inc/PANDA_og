@@ -1,0 +1,109 @@
+{
+    # Model
+    model: MaterialAnomaly()
+    loss_function:  F.binary_cross_entropy
+    weight_decay: 0.00005
+    optimizer: optim.SGD(model.parameters(), lr=settings["lr"], weight_decay=settings["weight_decay"], momentum=0.9)
+    scheduler:
+            '''
+            optim.lr_scheduler.OneCycleLR(
+            model.optimizer,
+            max_lr=settings["lr"],
+            epochs=settings["epochs"],
+            steps_per_epoch=len(dm.train_dataloader()),
+            verbose=False)
+            '''
+    # Wandb 
+    entity: hojinchang
+    project: sikorsky-carbon-panda
+    # Training 
+    diag_path: fisher_diagonal.pth
+    val_check_interval: 0.25
+    lr: 0.01
+    batch_size: 32
+    epochs: 20
+    gpus: 1
+    # Dataset
+    train_data: E:\Metrized-Data\Sikorsky\material_classifier\sikorsky_only\train
+    train_transform: 
+    
+        '''
+        T.Compose(
+        [
+            T.ToPILImage(),
+            T.Resize((224, 224)),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        '''
+    val_data: E:\Metrized-Data\Sikorsky\material_classifier\sikorsky_only\val
+    val_transform:
+        '''
+        T.Compose(
+            [
+                T.ToPILImage(),
+                T.Resize((224, 224)),
+                T.ToTensor(),
+                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+        '''
+    test_data: E:\Metrized-Data\Sikorsky\material_classifier\sikorsky_only\test
+    test_transform:
+        '''
+        T.Compose(
+        [
+            T.ToPILImage(),
+            T.Resize((224, 224)),
+            T.ToTensor(),
+        ])
+        '''
+    behavioural_data: data\test-behavioural
+    target_dist:
+        '''
+        {
+        "CARBON": 6000,
+        }
+        '''
+    label_dict:
+        '''
+        {
+        "CARBON": float(1),
+        "FIBERGLASS": float(0),
+        "LINER-LINE": float(0),
+        "LINER-NOLINE": float(0),
+        "TEXTURE": float(0),
+        "OTHER": float(0),
+        "WOVEN": float(0),
+        "ORIENT": float(0),
+        }   
+        '''
+    behavioural_dict:
+        '''{
+        "ALUMINUM": float(0),
+        "CARBON": float(0),
+        "CELLOPHANE": float(0),
+        "CERT PLATE": float(0),
+        "FIBERGLASS": float(0),
+        "LINER-LINE": float(1),
+        "LINER-NOLINE": float(1),
+        "RED": float(0),
+        "SATURATED": float(0),
+        "TOOLS": float(0),
+        }'''
+    degrad_transforms:
+        '''
+        [
+            T.GaussianBlur(11, 5),
+            T.GaussianBlur(25, 11),
+            T.GaussianBlur(41, 20),
+            [HueShift(-0.5), SatShift(1.5)],
+            [HueShift(-0.33), SatShift(1.5)],
+            [HueShift(-0.16), SatShift(1.5)],
+            [HueShift(0), SatShift(1.5)],
+            [HueShift(0.16), SatShift(1.5)],
+            [HueShift(0.33), SatShift(1.5)],
+        ]
+        '''
+    degrad_prob: 0.2
+    alpha: 0.1
+}
